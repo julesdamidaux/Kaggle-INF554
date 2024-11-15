@@ -33,6 +33,8 @@ def preprocess_text(text):
     text = text.lower()
     # Remove punctuation
     text = re.sub(r'[^\w\s]', '', text)
+    # Remove 'rt' at the beginning of the text 
+    text = re.sub(r'^rt\s+', '', text)
     # Remove numbers
     text = re.sub(r'\d+', '', text)
     # Tokenization
