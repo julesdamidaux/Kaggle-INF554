@@ -10,6 +10,10 @@ from sklearn.dummy import DummyClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
+import tensorflow as tf 
+from tensorflow.keras.models import Sequential 
+from tensorflow.keras.layers import Dense, Dropout 
+from tensorflow.keras.optimizers import Adam
 
 # Download some NLP models for processing, optional
 nltk.download('stopwords')
@@ -81,7 +85,24 @@ y = period_features['EventType'].values
 # validation set and without submitting too many times into Kaggle
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
 
-# We set up a basic classifier that we train and then calculate the accuracy on our test set
-clf = LogisticRegression(random_state=42, max_iter=1000).fit(X_train, y_train)
-y_pred = clf.predict(X_test)
-print("Test set: ", accuracy_score(y_test, y_pred))
+# Build a neural network model
+model = Sequential()
+model.add(Dense(128, input_dim=vector_size, activation='relu'))
+model.add(Dropout(0.5))
+model.add(Dense(64, activation='relu'))
+model.add(Dropout(0.5))
+model.add(Dense(1, activation='sigmoid'))  # Adjust output layer for binary classification; use softmax for multi-class
+
+# Compile the model
+model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])  # Adjust loss for binary classification; use categorical_crossentropy for multi-class
+
+# Train the model
+model.fit(X_train, y_train, epochs=20, batch_size=32, validation_split=0.2, verbose=1)
+
+# Evaluate the model on the test set
+loss, accuracy = model.evaluate(X_test, y_test)
+print(f"Test set accuracy: {accuracy}")
+
+# Predict on the test set
+y_pred = (model.predict(X_test) > 0.5).astype("int32")  # Adjust threshold for binary classification
+print("Test set accuracy:", accuracy_score(y_test, y_pred))
