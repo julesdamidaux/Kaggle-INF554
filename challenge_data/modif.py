@@ -58,6 +58,8 @@ for filename in os.listdir("train_tweets"):
     df = pd.read_csv("train_tweets/" + filename)
     li.append(df)
 df = pd.concat(li, ignore_index=True)
+df = df.sample(n=10000, random_state=42)
+df = df.dropna()
 
 # Apply preprocessing to each tweet
 df['Tweet'] = df['Tweet'].apply(preprocess_text)

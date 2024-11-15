@@ -53,6 +53,10 @@ for filename in os.listdir("train_tweets"):
     li.append(df)
 df = pd.concat(li, ignore_index=True)
 
+# Entrainer sur un petit échantillon
+df = df.sample(n=10000, random_state=42)
+df = df.dropna()
+
 # Apply preprocessing to each tweet
 df['Tweet'] = df['Tweet'].apply(preprocess_text)
 
