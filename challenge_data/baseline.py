@@ -1,3 +1,7 @@
+import time 
+
+debut = time.time()
+
 import os
 import re
 import gensim.downloader as api
@@ -55,7 +59,6 @@ df = pd.concat(li, ignore_index=True)
 
 # Entrainer sur un petit échantillon
 df = df.sample(n=10000, random_state=42)
-df = df.dropna()
 
 # Apply preprocessing to each tweet
 df['Tweet'] = df['Tweet'].apply(preprocess_text)
@@ -63,19 +66,32 @@ df['Tweet'] = df['Tweet'].apply(preprocess_text)
 # Apply preprocessing to each tweet and obtain vectors
 vector_size = 200  # Adjust based on the chosen GloVe model
 tweet_vectors = np.vstack([get_avg_embedding(tweet, embeddings_model, vector_size) for tweet in df['Tweet']])
-tweet_df = pd.DataFrame(tweet_vectors)
 
-# Attach the vectors into the original dataframe
-period_features = pd.concat([df, tweet_df], axis=1)
+# Add tweet_vectors as a new column in the DataFrame
+df['tweet_vectors'] = list(tweet_vectors)
+
+# Remove rows with NaN embedding vectors
+df.dropna(inplace=True)
+
 # Drop the columns that are not useful anymore
-period_features = period_features.drop(columns=['Timestamp', 'Tweet'])
-# Group the tweets into their corresponding periods. This way we generate an average embedding vector for each period
-period_features = period_features.groupby(['MatchID', 'PeriodID', 'ID']).mean().reset_index()
+df = df.drop(columns=['Timestamp', 'Tweet'])
 
-# We drop the non-numerical features and keep the embeddings values for each period
+# Group the tweets into their corresponding periods
+period_features = df.groupby(['MatchID', 'PeriodID', 'ID']).mean().reset_index()
+
+# Check the length of the DataFrame after processing
+print("Number of rows in period_features after processing:", len(period_features))
+
+# Recreate X and y after dropping NaN values
 X = period_features.drop(columns=['EventType', 'MatchID', 'PeriodID', 'ID']).values
-# We extract the labels of our training samples
+X = [x[0].tolist() for x in X]
 y = period_features['EventType'].values
+
+print(X[0]) # cest un array : bizarre...
+# Ensure X and y have the same length
+print("Length of X:", len(X))
+print("Length of y:", len(y))
+
 
 ###### Evaluating on a test set:
 
@@ -88,42 +104,45 @@ clf = LogisticRegression(random_state=42, max_iter=1000).fit(X_train, y_train)
 y_pred = clf.predict(X_test)
 print("Test set: ", accuracy_score(y_test, y_pred))
 
-###### For Kaggle submission
+# ###### For Kaggle submission
 
-# This time we train our classifier on the full dataset that it is available to us.
-clf = LogisticRegression(random_state=42, max_iter=1000).fit(X, y)
-# We add a dummy classifier for sanity purposes
-dummy_clf = DummyClassifier(strategy="most_frequent").fit(X, y)
+# # This time we train our classifier on the full dataset that it is available to us.
+# clf = LogisticRegression(random_state=42, max_iter=1000).fit(X, y)
+# # We add a dummy classifier for sanity purposes
+# dummy_clf = DummyClassifier(strategy="most_frequent").fit(X, y)
 
-predictions = []
-dummy_predictions = []
-# We read each file separately, we preprocess the tweets and then use the classifier to predict the labels.
-# Finally, we concatenate all predictions into a list that will eventually be concatenated and exported
-# to be submitted on Kaggle.
-for fname in os.listdir("eval_tweets"):
-    val_df = pd.read_csv("eval_tweets/" + fname)
-    val_df['Tweet'] = val_df['Tweet'].apply(preprocess_text)
+# predictions = []
+# dummy_predictions = []
+# # We read each file separately, we preprocess the tweets and then use the classifier to predict the labels.
+# # Finally, we concatenate all predictions into a list that will eventually be concatenated and exported
+# # to be submitted on Kaggle.
+# for fname in os.listdir("eval_tweets"):
+#     val_df = pd.read_csv("eval_tweets/" + fname)
+#     val_df['Tweet'] = val_df['Tweet'].apply(preprocess_text)
 
-    tweet_vectors = np.vstack([get_avg_embedding(tweet, embeddings_model, vector_size) for tweet in val_df['Tweet']])
-    tweet_df = pd.DataFrame(tweet_vectors)
+#     tweet_vectors = np.vstack([get_avg_embedding(tweet, embeddings_model, vector_size) for tweet in val_df['Tweet']])
+#     tweet_df = pd.DataFrame(tweet_vectors)
 
-    period_features = pd.concat([val_df, tweet_df], axis=1)
-    period_features = period_features.drop(columns=['Timestamp', 'Tweet'])
-    period_features = period_features.groupby(['MatchID', 'PeriodID', 'ID']).mean().reset_index()
-    X = period_features.drop(columns=['MatchID', 'PeriodID', 'ID']).values
+#     period_features = pd.concat([val_df, tweet_df], axis=1)
+#     period_features = period_features.drop(columns=['Timestamp', 'Tweet'])
+#     period_features = period_features.groupby(['MatchID', 'PeriodID', 'ID']).mean().reset_index()
+#     X = period_features.drop(columns=['MatchID', 'PeriodID', 'ID']).values
 
-    preds = clf.predict(X)
-    dummy_preds = dummy_clf.predict(X)
+#     preds = clf.predict(X)
+#     dummy_preds = dummy_clf.predict(X)
 
-    period_features['EventType'] = preds
-    period_features['DummyEventType'] = dummy_preds
+#     period_features['EventType'] = preds
+#     period_features['DummyEventType'] = dummy_preds
 
-    predictions.append(period_features[['ID', 'EventType']])
-    dummy_predictions.append(period_features[['ID', 'DummyEventType']])
+#     predictions.append(period_features[['ID', 'EventType']])
+#     dummy_predictions.append(period_features[['ID', 'DummyEventType']])
 
-pred_df = pd.concat(predictions)
-pred_df.to_csv('logistic_predictions.csv', index=False)
+# pred_df = pd.concat(predictions)
+# pred_df.to_csv('logistic_predictions.csv', index=False)
 
-pred_df = pd.concat(dummy_predictions)
-pred_df.to_csv('dummy_predictions.csv', index=False)
+# pred_df = pd.concat(dummy_predictions)
+# pred_df.to_csv('dummy_predictions.csv', index=False)
 
+fin = time.time()
+
+print('temps total', fin - debut)
