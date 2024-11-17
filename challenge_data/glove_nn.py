@@ -1,3 +1,7 @@
+import time 
+
+debut = time.time()
+
 import os
 import re
 import gensim.downloader as api
@@ -10,6 +14,7 @@ from sklearn.dummy import DummyClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
+from tqdm import tqdm
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -54,7 +59,7 @@ def preprocess_text(text):
 
 # Read all training files and concatenate them into one dataframe
 li = []
-for filename in os.listdir("train_tweets"):
+for filename in tqdm(os.listdir("train_tweets")):
     df = pd.read_csv("train_tweets/" + filename)
     li.append(df)
 df = pd.concat(li, ignore_index=True)
@@ -69,22 +74,33 @@ df['Embeddings'] = list(np.vstack([get_avg_embedding(tweet, embeddings_model, ve
 
 # Drop the columns that are not useful anymore
 period_features = df.drop(columns=['Timestamp', 'Tweet'])
-# Group the tweets into their corresponding periods. This way we generate an average embedding vector for each period
-period_features = period_features.groupby(['MatchID', 'PeriodID', 'ID']).mean().reset_index()
 
-# We drop the non-numerical features and keep the embeddings values for each period
-X = period_features.drop(columns=['EventType', 'MatchID', 'PeriodID', 'ID']).values
-X = [x[0].tolist() for x in X]
-# We extract the labels of our training samples
-y = period_features['EventType'].values
+# Assurez-vous de remplacer 'Embeddings' par le nom réel de la colonne contenant vos embeddings
+grouped = period_features.groupby(['MatchID', 'PeriodID', 'ID'])
 
+# Fonction pour calculer la moyenne et le maximum, puis les concaténer
+def compute_mean_and_max_concat(group):
+    embeddings = np.stack(group['Embeddings'].values)  # Empilement des vecteurs
+    mean_vector = embeddings.mean(axis=0)             # Moyenne des vecteurs
+    max_vector = embeddings.max(axis=0)               # Max par coordonnée
+    concatenated = np.concatenate((mean_vector, max_vector))  # Concatenation mean + max
+    return concatenated
+
+# Application de la fonction sur chaque groupe pour obtenir une liste de listes
+X = grouped.apply(lambda g: compute_mean_and_max_concat(g)).tolist()
+
+# Résultat
+print(f"Taille de X : {len(X)}")
+print(f"Exemple d'un vecteur dans X : {X[0]}")
+
+y = grouped['EventType'].first().tolist()
+
+print(y)
 ###### Evaluating on a test set:
 
 # We split our data into a training and test set that we can use to train our classifier without fine-tuning into the
 # validation set and without submitting too many times into Kaggle
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
-
-
 
 # Convert data to PyTorch tensors
 X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
@@ -123,7 +139,7 @@ class NeuralNet(nn.Module):
         return x
 
 # Initialize the model, loss function, and optimizer
-model = NeuralNet(vector_size)
+model = NeuralNet(vector_size*2)
 criterion = nn.BCELoss()  # Binary Cross Entropy Loss for binary classification
 optimizer = optim.Adam(model.parameters(), lr=0.0005)  # Smaller learning rate
 
@@ -156,3 +172,7 @@ y_pred = (np.array(y_pred_list) > 0.5).astype(int)  # Adjust threshold for binar
 # Print test set accuracy
 accuracy = accuracy_score(y_test, y_pred)
 print("Test set accuracy:", accuracy)
+
+fin = time.time()
+
+print('temps total', fin-debut)
