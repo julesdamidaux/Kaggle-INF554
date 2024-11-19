@@ -1,9 +1,3 @@
-'''
-Pour chaque minute, utiliser un CNN qui apprend la représentation des ~10000 tweets que l'on donne ensuite au MLP
-'''
-
-
-
 import time 
 
 debut = time.time()
@@ -173,6 +167,27 @@ y_pred = (np.array(y_pred_list) > 0.5).astype(int)  # Adjust threshold for binar
 # Print test set accuracy
 accuracy = accuracy_score(y_test, y_pred)
 print("Test set accuracy:", accuracy)
+
+
+######################################### KAGGLE SUBMISSION ################################################
+
+predictions = []
+dummy_predictions = []
+# We read each file separately, we preprocess the tweets and then use the classifier to predict the labels.
+# Finally, we concatenate all predictions into a list that will eventually be concatenated and exported
+# to be submitted on Kaggle.
+for fname in os.listdir("eval_tweets"):
+    eval_df = pd.read_csv("eval_tweets/" + fname)
+
+eval_df['Tweet'] = eval_df['Tweet'].apply(preprocess_text)
+
+tweet_vectors = np.vstack([get_avg_embedding(tweet, embeddings_model, vector_size) for tweet in eval_df['Tweet']])
+tweet_df = pd.DataFrame(tweet_vectors)
+
+period_features = pd.concat([eval_df, tweet_df], axis=1)
+period_features = period_features.drop(columns=['Timestamp', 'Tweet'])
+period_features = period_features.groupby(['MatchID', 'PeriodID', 'ID']).mean().reset_index()
+X = period_features.drop(columns=['MatchID', 'PeriodID', 'ID']).values
 
 fin = time.time()
 
