@@ -174,6 +174,58 @@ y_pred = (np.array(y_pred_list) > 0.5).astype(int)  # Adjust threshold for binar
 accuracy = accuracy_score(y_test, y_pred)
 print("Test set accuracy:", accuracy)
 
+######################################### KAGGLE SUBMISSION ################################################
+
+
+# We read each file separately, we preprocess the tweets and then use the classifier to predict the labels.
+# Finally, we concatenate all predictions into a list that will eventually be concatenated and exported
+# to be submitted on Kaggle.
+lis = []
+for fname in os.listdir("eval_tweets"):
+    df = pd.read_csv("eval_tweets/" + fname)
+    lis.append(df)
+
+eval_df = pd.concat(lis, ignore_index=True)
+
+eval_df['Tweet'] = eval_df['Tweet'].apply(preprocess_text)
+
+eval_df['Embeddings'] = list(np.vstack([get_avg_embedding(tweet, embeddings_model, vector_size) for tweet in eval_df['Tweet']]))
+period_features = eval_df.drop(columns=['Timestamp', 'Tweet'])
+grouped = period_features.groupby(['MatchID', 'PeriodID', 'ID'])
+
+# Application de la fonction sur chaque groupe pour obtenir une liste de listes
+X_test = grouped.apply(lambda g: compute_mean_and_max_concat(g)).tolist()
+
+X_test_tensor = torch.tensor(X_test, dtype=torch.float32)
+
+test_dataset = TensorDataset(X_test_tensor)
+
+test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+
+# Predictions on the eval set
+model.eval()
+with torch.no_grad():
+    y_pred_list = []
+    for X_batch in test_loader:
+        # Si X_batch est déjà un tenseur, pas besoin de le transformer
+        X_batch = X_batch[0]
+        
+        outputs = model(X_batch)  # Passez un tenseur au modèle
+        print(outputs)
+        y_pred_list.extend(outputs.numpy())  # Ajoutez les prédictions à la liste
+
+
+y_pred = (np.array(y_pred_list) > 0.5).astype(int)  # Adjust threshold for binary classification
+y_pred = [_[0] for _ in y_pred]
+print(y_pred)
+
+IDs = grouped['ID'].first().tolist()
+print(IDs)
+
+results = pd.DataFrame({'ID': IDs, 'EventType': y_pred})
+
+results.to_csv('submission.csv', index=False)
+
 fin = time.time()
 
 print('temps total', fin-debut)
