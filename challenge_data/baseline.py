@@ -104,44 +104,46 @@ clf = LogisticRegression(random_state=42, max_iter=1000).fit(X_train, y_train)
 y_pred = clf.predict(X_test)
 print("Test set: ", accuracy_score(y_test, y_pred))
 
-# ###### For Kaggle submission
+###### For Kaggle submission
 
-# # This time we train our classifier on the full dataset that it is available to us.
-# clf = LogisticRegression(random_state=42, max_iter=1000).fit(X, y)
-# # We add a dummy classifier for sanity purposes
-# dummy_clf = DummyClassifier(strategy="most_frequent").fit(X, y)
 
-# predictions = []
-# dummy_predictions = []
-# # We read each file separately, we preprocess the tweets and then use the classifier to predict the labels.
-# # Finally, we concatenate all predictions into a list that will eventually be concatenated and exported
-# # to be submitted on Kaggle.
-# for fname in os.listdir("eval_tweets"):
-#     val_df = pd.read_csv("eval_tweets/" + fname)
-#     val_df['Tweet'] = val_df['Tweet'].apply(preprocess_text)
+# This time we train our classifier on the full dataset that it is available to us.
+clf = LogisticRegression(random_state=42, max_iter=1000).fit(X, y)
 
-#     tweet_vectors = np.vstack([get_avg_embedding(tweet, embeddings_model, vector_size) for tweet in val_df['Tweet']])
-#     tweet_df = pd.DataFrame(tweet_vectors)
+# We add a dummy classifier for sanity purposes
+dummy_clf = DummyClassifier(strategy="most_frequent").fit(X, y)
+predictions = []
+dummy_predictions = []
 
-#     period_features = pd.concat([val_df, tweet_df], axis=1)
-#     period_features = period_features.drop(columns=['Timestamp', 'Tweet'])
-#     period_features = period_features.groupby(['MatchID', 'PeriodID', 'ID']).mean().reset_index()
-#     X = period_features.drop(columns=['MatchID', 'PeriodID', 'ID']).values
+# We read each file separately, we preprocess the tweets and then use the classifier to predict the labels.
+# Finally, we concatenate all predictions into a list that will eventually be concatenated and exported
+# to be submitted on Kaggle.
 
-#     preds = clf.predict(X)
-#     dummy_preds = dummy_clf.predict(X)
+for fname in os.listdir("eval_tweets"):
+    val_df = pd.read_csv("eval_tweets/" + fname)
+    val_df['Tweet'] = val_df['Tweet'].apply(preprocess_text)
 
-#     period_features['EventType'] = preds
-#     period_features['DummyEventType'] = dummy_preds
+    tweet_vectors = np.vstack([get_avg_embedding(tweet, embeddings_model, vector_size) for tweet in val_df['Tweet']])
+    tweet_df = pd.DataFrame(tweet_vectors)
 
-#     predictions.append(period_features[['ID', 'EventType']])
-#     dummy_predictions.append(period_features[['ID', 'DummyEventType']])
+    period_features = pd.concat([val_df, tweet_df], axis=1)
+    period_features = period_features.drop(columns=['Timestamp', 'Tweet'])
+    period_features = period_features.groupby(['MatchID', 'PeriodID', 'ID']).mean().reset_index()
 
-# pred_df = pd.concat(predictions)
-# pred_df.to_csv('logistic_predictions.csv', index=False)
+    X = period_features.drop(columns=['MatchID', 'PeriodID', 'ID']).values
+    preds = clf.predict(X)
+    dummy_preds = dummy_clf.predict(X)
 
-# pred_df = pd.concat(dummy_predictions)
-# pred_df.to_csv('dummy_predictions.csv', index=False)
+    period_features['EventType'] = preds
+    period_features['DummyEventType'] = dummy_preds
+    
+    predictions.append(period_features[['ID', 'EventType']])
+    dummy_predictions.append(period_features[['ID', 'DummyEventType']])
+
+pred_df = pd.concat(predictions)
+pred_df.to_csv('logistic_predictions.csv', index=False)
+pred_df = pd.concat(dummy_predictions)
+pred_df.to_csv('dummy_predictions.csv', index=False)
 
 fin = time.time()
 
