@@ -1,167 +1,283 @@
 import os
 import re
 import pandas as pd
+import numpy as np
 import torch
 from sklearn.model_selection import train_test_split
-from transformers import BertTokenizer, BertForSequenceClassification, TrainingArguments, Trainer
+from sklearn.metrics import accuracy_score
+from transformers import (
+    BigBirdTokenizer,
+    BigBirdForSequenceClassification,
+    TrainingArguments,
+    Trainer,
+)
 from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
+from nltk.stem import WordNetLemmatizer, PorterStemmer
+from nltk.tokenize import word_tokenize
 from tqdm import tqdm
-tqdm.pandas(desc='Preprocessing')
+tqdm.pandas(desc='Preprocessing !')
 import nltk
 
-# Télécharger les ressources nécessaires pour nltk
+torch.cuda.empty_cache()
+
+# Download necessary NLTK resources
 nltk.download('stopwords')
 nltk.download('wordnet')
+nltk.download('punkt')
 
-# Prétraitement du texte
-def preprocess_text(text):
-    text = text.lower()  # Lowercasing
-    text = re.sub(r'[^\w\s]', '', text)  # Remove punctuation
-    text = re.sub(r'^rt\s+', '', text)  # Remove 'rt' at the beginning
-    text = re.sub(r'\d+', '', text)  # Remove numbers
-    words = text.split()  # Tokenization
-    stop_words = set(stopwords.words('english'))
-    words = [word for word in words if word not in stop_words]  # Remove stopwords
+# Advanced text preprocessing
+def preprocess_text(text, remove_stopwords=True):
+    """
+    Preprocess a given text: normalize, clean, tokenize, lemmatize, and optionally remove stopwords.
+    
+    Parameters:
+        text (str): The input text to preprocess.
+        remove_stopwords (bool): Whether to remove stopwords (default: True).
+        
+    Returns:
+        str: The cleaned and preprocessed text.
+    """
+    # Convert to lowercase
+    text = text.lower()
+    
+    # Expand common contractions
+    contractions = {
+        "can't": "cannot", "won't": "will not", "n't": " not",
+        "'re": " are", "'s": " is", "'d": " would", "'ll": " will", "'t": " not",
+        "'ve": " have", "'m": " am"
+    }
+    for contraction, full_form in contractions.items():
+        text = re.sub(contraction, full_form, text)
+    
+    # Remove URLs
+    text = re.sub(r'http[s]?://\S+|www\.\S+', '', text)
+    
+    # Remove mentions and hashtags
+    text = re.sub(r'@\w+|#\w+', '', text)
+    
+    # Remove non-ASCII characters
+    text = re.sub(r'[^\x00-\x7F]+', '', text)
+    
+    # Remove punctuation and numbers
+    text = re.sub(r'[^\w\s]', '', text)  # Punctuation
+    text = re.sub(r'\d+', '', text)      # Digits
+    
+    # Tokenize text
+    words = word_tokenize(text)
+    
+    # Remove stopwords
+    if remove_stopwords:
+        stop_words = set(stopwords.words('english'))
+        words = [word for word in words if word not in stop_words]
+    
+    # Remove very short words
+    words = [word for word in words if len(word) > 2]
+    
+    # Lemmatize words
     lemmatizer = WordNetLemmatizer()
-    words = [lemmatizer.lemmatize(word) for word in words]  # Lemmatization
-    return ' '.join(words)
+    words = [lemmatizer.lemmatize(word) for word in words]
+    
+    # Stemming (optional, after lemmatization)
+    stemmer = PorterStemmer()
+    words = [stemmer.stem(word) for word in words]
+    
+    # Join back into a single string
+    processed_text = ' '.join(words)
+    
+    # Remove extra spaces
+    processed_text = re.sub(r'\s+', ' ', processed_text).strip()
+    
+    return processed_text
 
-# Charger les données et appliquer le prétraitement
+# Load and preprocess data
 def load_and_preprocess_data(folder_path):
     data = []
     print("Loading and preprocessing data...")
     for filename in tqdm(os.listdir(folder_path), desc="Files processed"):
         file_path = os.path.join(folder_path, filename)
         df = pd.read_csv(file_path)
-        df = df.sample(n=10000, random_state=42) # On garde que 10000 tweets par match 
+        df = df.sample(n=100000, random_state=42)
         df['Tweet'] = df['Tweet'].progress_apply(preprocess_text)
         data.append(df)
     return pd.concat(data, ignore_index=True)
 
-# Classe pour encapsuler les données dans un format compatible PyTorch
-class TweetDataset(torch.utils.data.Dataset):
-    def __init__(self, encodings, labels):
-        self.encodings = encodings
-        self.labels = labels
+def compute_metrics(eval_pred):
+    predictions, labels, sample_ids = eval_pred
+    preds = np.argmax(predictions, axis=1)
 
-    def __len__(self):
-        return len(self.labels)
+    # Agrégation des prédictions par sample_id
+    df = pd.DataFrame({'sample_id': sample_ids, 'preds': preds, 'labels': labels})
+    aggregated = df.groupby('sample_id').agg({
+        'preds': lambda x: np.argmax(np.bincount(x)),
+        'labels': 'first'
+    }).reset_index()
 
-    def __getitem__(self, idx):
-        item = {key: torch.tensor(val[idx]) for key, val in self.encodings.items()}
-        item['labels'] = torch.tensor(self.labels[idx])
-        return item
-
-# Prédiction sur un ensemble de données
-def predict_on_eval_data(model, tokenizer, folder_path, output_path):
-    eval_data = []
-    print("Processing evaluation data...")
-    for filename in tqdm(os.listdir(folder_path), desc="Files processed"):
-        file_path = os.path.join(folder_path, filename)
-        df = pd.read_csv(file_path)
-        df['Tweet'] = df['Tweet'].progress_apply(preprocess_text)
-        eval_data.append(df)
-
-    eval_df = pd.concat(eval_data, ignore_index=True)
-    eval_texts = eval_df['Tweet'].tolist()
-
-    print("Tokenizing evaluation data...")
-    eval_encodings = tokenizer(eval_texts, truncation=True, padding=True, max_length=128, return_tensors="pt")
-
-    print("Making predictions...")
-    model.eval()
-    predictions = []
-    with torch.no_grad():
-        for i in tqdm(range(0, len(eval_texts), 16), desc="Batches processed"):
-            inputs = {key: val[i:i+16].to('cuda') for key, val in eval_encodings.items()}
-            outputs = model(**inputs)
-            probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
-            preds = torch.argmax(probs, dim=-1).cpu().tolist()
-            predictions.extend(preds)
-
-    eval_df['Prediction'] = predictions
-    eval_df.to_csv(output_path, index=False)
-    print(f"Predictions saved to {output_path}")
+    acc = accuracy_score(aggregated['labels'], aggregated['preds'])
+    return {"accuracy": acc}
 
 def main():
-    # Charger les données d'entraînement
+    # Load training data
     train_folder = "train_tweets"
     df = load_and_preprocess_data(train_folder)
-    df = df.sample(n=5000, random_state=42)
 
-    # Préparer les données
+    # Group tweets by minute
+    print("Grouping data by minute...")
+    df_grouped = df.groupby(['MatchID', 'PeriodID', 'ID'], as_index=False).agg({
+        'Tweet': ' '.join,  # Concatenate tweets
+        'EventType': 'first'  # Take first EventType
+    })
+
+    # Split data into training and validation sets
     print("Splitting data into training and validation sets...")
-    tweets = df['Tweet'].tolist()
-    labels = df['EventType'].tolist()
-    train_texts, val_texts, train_labels, val_labels = train_test_split(tweets, labels, test_size=0.2, random_state=42)
+    train_df, val_df = train_test_split(df_grouped, test_size=0.2, random_state=42)
 
-    # Charger le tokenizer et le modèle BERT
-    print("Loading tokenizer and BERT model...")
-    bert_model_name = "bert-base-uncased"
-    tokenizer = BertTokenizer.from_pretrained(bert_model_name)
-    model = BertForSequenceClassification.from_pretrained(bert_model_name, num_labels=2)
+    # Load tokenizer and BigBird model
+    print("Loading tokenizer and BigBird model...")
+    bigbird_model_name = "google/bigbird-roberta-base"
+    tokenizer = BigBirdTokenizer.from_pretrained(bigbird_model_name)
+    model = BigBirdForSequenceClassification.from_pretrained(bigbird_model_name, num_labels=2)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(device)
     model = model.to(device)
 
+    # Set max_length and stride for sliding window
+    max_length = 1024
+    stride = 512
 
-    # Tokenisation
-    print("Tokenizing training and validation data...")
-    train_encodings = tokenizer(train_texts, truncation=True, padding=True, max_length=128, return_tensors="pt")
-    val_encodings = tokenizer(val_texts, truncation=True, padding=True, max_length=128, return_tensors="pt")
+    # Process training data with sliding window
+    print("Processing training data with sliding window...")
+    train_encodings = {'input_ids': [], 'attention_mask': []}
+    train_labels = []
 
-    # Créer les datasets
+    for idx, row in tqdm(train_df.iterrows(), total=len(train_df), desc='Processing training data'):
+        text = row['Tweet']
+        label = row['EventType']
+        encoding = tokenizer.encode_plus(
+            text,
+            truncation=True,
+            max_length=max_length,
+            stride=stride,
+            return_overflowing_tokens=True,
+            padding='max_length',
+            return_attention_mask=True,
+        )
+        num_chunks = len(encoding['input_ids']) if isinstance(encoding['input_ids'][0], list) else 1
+
+        if num_chunks == 1:
+            train_encodings['input_ids'].append(encoding['input_ids'])
+            train_encodings['attention_mask'].append(encoding['attention_mask'])
+            train_labels.append(label)
+        else:
+            train_encodings['input_ids'].extend(encoding['input_ids'])
+            train_encodings['attention_mask'].extend(encoding['attention_mask'])
+            overflow_mapping = encoding['overflow_to_sample_mapping']
+            train_labels.extend([label] * len(overflow_mapping))
+
+    # Process validation data with sliding window
+    print("Processing validation data with sliding window...")
+    val_encodings = {'input_ids': [], 'attention_mask': []}
+    val_labels = []
+
+    for idx, row in tqdm(val_df.iterrows(), total=len(val_df), desc='Processing validation data'):
+        text = row['Tweet']
+        label = row['EventType']
+        encoding = tokenizer.encode_plus(
+            text,
+            truncation=True,
+            max_length=max_length,
+            stride=stride,
+            return_overflowing_tokens=True,
+            padding='max_length',
+            return_attention_mask=True,
+        )
+        num_chunks = len(encoding['input_ids']) if isinstance(encoding['input_ids'][0], list) else 1
+
+        if num_chunks == 1:
+            val_encodings['input_ids'].append(encoding['input_ids'])
+            val_encodings['attention_mask'].append(encoding['attention_mask'])
+            val_labels.append(label)
+        else:
+            val_encodings['input_ids'].extend(encoding['input_ids'])
+            val_encodings['attention_mask'].extend(encoding['attention_mask'])
+            overflow_mapping = encoding['overflow_to_sample_mapping']
+            val_labels.extend([label] * len(overflow_mapping))
+
+    # Create datasets
+    class TweetDataset(torch.utils.data.Dataset):
+        def __init__(self, encodings, labels):
+            self.encodings = encodings
+            self.labels = labels
+
+        def __len__(self):
+            return len(self.labels)
+
+        def __getitem__(self, idx):
+            item = {key: torch.tensor(val[idx]) for key, val in self.encodings.items()}
+            item['labels'] = torch.tensor(self.labels[idx], dtype=torch.long)
+            return item
+
     train_dataset = TweetDataset(train_encodings, train_labels)
     val_dataset = TweetDataset(val_encodings, val_labels)
 
-    # Configurer les paramètres d'entraînement
+    # Configure training arguments
     print("Setting up training arguments...")
     training_args = TrainingArguments(
         output_dir="./results",
-        eval_strategy="epoch",  # Évaluation à chaque époque
-        save_strategy="epoch",        # Sauvegarde à chaque époque pour correspondre
-        learning_rate=5e-5,
-        per_device_train_batch_size=4,
-        per_device_eval_batch_size=4,
-        num_train_epochs=2,
-        fp16=True,
+        evaluation_strategy="epoch",
+        save_strategy="epoch",
+        learning_rate=3e-5,
+        per_device_train_batch_size=8,
+        per_device_eval_batch_size=8,
+        num_train_epochs=5,
         gradient_accumulation_steps=4,
+        warmup_steps=500,
         weight_decay=0.01,
         save_total_limit=2,
         load_best_model_at_end=True,
         metric_for_best_model="accuracy",
+        logging_dir="./logs",
+        logging_steps=10,
+        fp16=True
     )
 
-
-    # Définir le Trainer
-    print("setting un trainer")
+    # Define Trainer
+    print("Initializing Trainer...")
     trainer = Trainer(
-        model=model,                          
-        args=training_args,                   
-        train_dataset=train_dataset,          
-        eval_dataset=val_dataset,             
-        tokenizer=tokenizer,                  
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
+        tokenizer=tokenizer,
+        compute_metrics=compute_metrics,
     )
 
-    # Entraîner le modèle
+    # Train model
     print("Starting training...")
     trainer.train()
 
-    # Sauvegarder le modèle
+    # Save model
     print("Saving the fine-tuned model...")
-    model.save_pretrained("./fine_tuned_bert")
-    tokenizer.save_pretrained("./fine_tuned_bert")
+    model.save_pretrained("./fine_tuned_bigbird")
+    tokenizer.save_pretrained("./fine_tuned_bigbird")
 
-    # Évaluer le modèle
+    # Evaluate model
     print("Evaluating the model...")
-    metrics = trainer.evaluate()
-    print("Metrics:", metrics)
+    raw_pred, labels, _ = trainer.predict(val_dataset)
+    preds = np.argmax(raw_pred, axis=1)
 
-    # Prédictions sur le dossier d'évaluation
-    # eval_folder = "eval_tweets"
-    # output_file = "eval_predictions.csv"
-    # predict_on_eval_data(model, tokenizer, eval_folder, output_file)
+    # Aggregate predictions per sample_id
+    df = pd.DataFrame({
+        'sample_id': val_sample_ids,
+        'preds': preds,
+        'labels': val_labels
+    })
+    aggregated = df.groupby('sample_id').agg({
+        'preds': lambda x: np.argmax(np.bincount(x)),
+        'labels': 'first'
+    }).reset_index()
+
+    acc = accuracy_score(aggregated['labels'], aggregated['preds'])
+    print("Aggregated Accuracy:", acc)
+
 
 if __name__ == "__main__":
     main()
