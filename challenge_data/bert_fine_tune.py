@@ -96,23 +96,14 @@ def load_and_preprocess_data(folder_path):
     for filename in tqdm(os.listdir(folder_path), desc="Files processed"):
         file_path = os.path.join(folder_path, filename)
         df = pd.read_csv(file_path)
-        df = df.sample(n=100000, random_state=42)
         df['Tweet'] = df['Tweet'].progress_apply(preprocess_text)
         data.append(df)
     return pd.concat(data, ignore_index=True)
 
-def compute_metrics(eval_pred):
-    predictions, labels, sample_ids = eval_pred
-    preds = np.argmax(predictions, axis=1)
-
-    # Agrégation des prédictions par sample_id
-    df = pd.DataFrame({'sample_id': sample_ids, 'preds': preds, 'labels': labels})
-    aggregated = df.groupby('sample_id').agg({
-        'preds': lambda x: np.argmax(np.bincount(x)),
-        'labels': 'first'
-    }).reset_index()
-
-    acc = accuracy_score(aggregated['labels'], aggregated['preds'])
+def compute_metrics(pred):
+    labels = pred.label_ids
+    preds = pred.predictions.argmax(-1)
+    acc = accuracy_score(labels, preds)
     return {"accuracy": acc}
 
 def main():
@@ -227,7 +218,7 @@ def main():
         learning_rate=3e-5,
         per_device_train_batch_size=8,
         per_device_eval_batch_size=8,
-        num_train_epochs=5,
+        num_train_epochs=8,
         gradient_accumulation_steps=4,
         warmup_steps=500,
         weight_decay=0.01,
@@ -261,23 +252,8 @@ def main():
 
     # Evaluate model
     print("Evaluating the model...")
-    raw_pred, labels, _ = trainer.predict(val_dataset)
-    preds = np.argmax(raw_pred, axis=1)
-
-    # Aggregate predictions per sample_id
-    df = pd.DataFrame({
-        'sample_id': val_sample_ids,
-        'preds': preds,
-        'labels': val_labels
-    })
-    aggregated = df.groupby('sample_id').agg({
-        'preds': lambda x: np.argmax(np.bincount(x)),
-        'labels': 'first'
-    }).reset_index()
-
-    acc = accuracy_score(aggregated['labels'], aggregated['preds'])
-    print("Aggregated Accuracy:", acc)
-
+    metrics = trainer.evaluate()
+    print("Metrics:", metrics)
 
 if __name__ == "__main__":
     main()
