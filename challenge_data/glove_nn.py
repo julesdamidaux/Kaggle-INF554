@@ -13,19 +13,28 @@ class NeuralNet(nn.Module):
     def __init__(self, input_size, slope = 0.01):
         super(NeuralNet, self).__init__()
 
-        self.fc1 = nn.Linear(input_size, 128)
-        self.bn1 = nn.BatchNorm1d(128)
-        self.dropout1 = nn.Dropout(0.4)
-        self.fc2 = nn.Linear(128,64)
-        self.bn2 = nn.BatchNorm1d(64)
-        self.dropout2 = nn.Dropout(0.4)
-        self.fc3 = nn.Linear(64, 32)
-        self.bn3 = nn.BatchNorm1d(32)
-        self.dropout3 = nn.Dropout(0.4)
-        self.fc4 = nn.Linear(32, 16)
-        self.bn4 = nn.BatchNorm1d(16)
-        self.dropout4 = nn.Dropout(0.4)
-        self.fc5 = nn.Linear(16, 1)
+        self.fc1 = nn.Linear(input_size, 256)
+        self.bn1 = nn.BatchNorm1d(256)
+        self.dropout1 = nn.Dropout(0.5)
+
+        self.fc2 = nn.Linear(256, 128)
+        self.bn2 = nn.BatchNorm1d(128)
+        self.dropout2 = nn.Dropout(0.5)
+
+        self.fc3 = nn.Linear(128, 64)
+        self.bn3 = nn.BatchNorm1d(64)
+        self.dropout3 = nn.Dropout(0.5)
+
+        self.fc4 = nn.Linear(64, 32)
+        self.bn4 = nn.BatchNorm1d(32)
+        self.dropout4 = nn.Dropout(0.5)
+
+        self.fc5 = nn.Linear(32, 16)
+        self.bn5 = nn.BatchNorm1d(16)
+        self.dropout5 = nn.Dropout(0.5)
+
+        self.fc6 = nn.Linear(16, 1)
+        
         self.slope = slope
 
     def forward(self, x):
@@ -37,7 +46,9 @@ class NeuralNet(nn.Module):
         x = self.dropout3(x)
         x = self.bn4(torch.nn.functional.leaky_relu(self.fc4(x), negative_slope=self.slope))
         x = self.dropout4(x)
-        x = self.fc5(x)
+        x = self.bn5(torch.nn.functional.leaky_relu(self.fc5(x), negative_slope=self.slope))
+        x = self.dropout5(x)
+        x = self.fc6(x)
         return x
 
 # Training loop with increased epochs

@@ -1,5 +1,7 @@
 import os
 import re
+import emoji
+import random
 import gensim.downloader as api
 import nltk
 import numpy as np
@@ -11,10 +13,15 @@ from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 from textblob import TextBlob
 
-# Download some NLP models for processing, optional
+# Enable tqdm for pandas
+tqdm.pandas()
+
+# Download some NLP models for processing
 nltk.download('stopwords')
 nltk.download('wordnet')
 
+# Load GloVe model with Gensim's API
+embeddings_model = api.load("glove-twitter-200")  # 200-dimensional GloVe embeddings
 
 # Function to compute the average word vector for a tweet
 def get_avg_embedding(tweet, model, vector_size=200):
@@ -25,119 +32,212 @@ def get_avg_embedding(tweet, model, vector_size=200):
     return np.mean(word_vectors, axis=0)
 
 
-# Preprocessing function, can be basic or enhanced
-def preprocess_text(text, enhanced = True):
+def preprocess_tweet(tweet):
     # Lowercasing
-    text = text.lower()
-    # Remove punctuation
-    text = re.sub(r'[^\w\s]', '', text)
-    # Remove 'rt' at the beginning of the text 
-    text = re.sub(r'^rt\s+', '', text)
-    # Remove numbers
-    text = re.sub(r'\d+', '', text)
+    tweet = tweet.lower()
+    
+    # Remove URLs
+    tweet = re.sub(r'http\S+|www\.\S+', '', tweet)
+    
+    # Remove mentions (@username)
+    tweet = re.sub(r'@\w+', '', tweet)
+    
+    # Remove hashtags (keep the text after the #)
+    tweet = re.sub(r'#(\w+)', r'\1', tweet)
+    
+    # Remove special characters, punctuation, and numbers
+    tweet = re.sub(r'[^a-z\s]', '', tweet)
+    
     # Tokenization
-    words = text.split()
+    words = tweet.split()
+    
     # Remove stopwords
     stop_words = set(stopwords.words('english'))
     words = [word for word in words if word not in stop_words]
-
-    if enhanced :
-        contractions = {
-        "can't": "cannot", "won't": "will not", "n't": " not",
-        "'re": " are", "'s": " is", "'d": " would", "'ll": " will", "'t": " not",
-        "'ve": " have", "'m": " am"}
-        for contraction, full_form in contractions.items():
-            text = re.sub(contraction, full_form, text)
-
-        # Remove URLs
-        text = re.sub(r'http[s]?://\S+|www\.\S+', '', text)
     
-        # Remove mentions and hashtags
-        text = re.sub(r'@\w+|#\w+', '', text)
-
-        # Remove non-ASCII characters
-        text = re.sub(r'[^\x00-\x7F]+', '', text)
-
-        # Remove very short words
-        words = [word for word in words if len(word) > 2]
-
     # Lemmatization
     lemmatizer = WordNetLemmatizer()
     words = [lemmatizer.lemmatize(word) for word in words]
     
-    if enhanced :
-        # Stemming (optional, after lemmatization)
-        stemmer = PorterStemmer()
-        words = [stemmer.stem(word) for word in words]
-
-    # Join back into a single string
-    processed_text = ' '.join(words)
+    # Handle emojis (optional: convert to text or remove)
+    tweet = emoji.demojize(' '.join(words))  # Converts emojis to text, e.g., ":smile:"
     
-    # Remove extra spaces
-    processed_text = re.sub(r'\s+', ' ', processed_text).strip()
+    # Final cleanup: remove redundant spaces
+    tweet = re.sub(r'\s+', ' ', tweet).strip()
     
-    return processed_text
+    return tweet
 
+# Get a sorted list of filenames
+file_list = sorted(os.listdir("train_tweets"))
 
-# Function to calculate mean and max and then to concatenate them
-def compute_mean_and_max_concat(group):
-    embeddings = np.stack(group['Embeddings'].values)  
-    mean_vector = embeddings.mean(axis=0)             
-    max_vector = embeddings.max(axis=0)               
-    concatenated = np.concatenate((mean_vector, max_vector))  
-    return concatenated
+# Randomly select 4 files for df_test
+test_files = random.sample(file_list, 4)
 
-# Load GloVe model with Gensim's API
-embeddings_model = api.load("glove-twitter-200")  # 200-dimensional GloVe embeddings
+# Get the remaining files for df_train
+train_files = [file for file in file_list if file not in test_files]
 
-# Read all training files and concatenate them into one dataframe
-li = []
-for filename in tqdm(os.listdir("train_tweets")):
+# Combine train files into df_train
+li_train = []
+for filename in train_files:
     df = pd.read_csv("train_tweets/" + filename)
-    li.append(df)
-df = pd.concat(li, ignore_index=True)
-df = df.sample(n=100000, random_state=42)
+    li_train.append(df)
+df_train = pd.concat(li_train, ignore_index=True)
+
+# Combine test files into df_test
+li_test = []
+for filename in test_files:
+    df = pd.read_csv("train_tweets/" + filename)
+    li_test.append(df)
+df_test = pd.concat(li_test, ignore_index=True)
+
+# Output df_train and df_test for verification
+print(f"df_train: {df_train.shape}")
+print(f"df_test: {df_test.shape}")
 
 # Apply preprocessing to each tweet
-df['Tweet'] = df['Tweet'].apply(preprocess_text)
+df_train['Tweet'] = df_train['Tweet'].progress_apply(preprocess_tweet)
+df_test['Tweet'] = df_test['Tweet'].progress_apply(preprocess_tweet)
 
-# Add a feature for sentiment using TextBlob, after preprocesing
-df['sentiment'] = df['Tweet'].apply(lambda x: TextBlob(x).sentiment.polarity)
+# Add a feature for sentiment using TextBlob
+df_train['sentiment'] = df_train['Tweet'].progress_apply(lambda x: TextBlob(x).sentiment.polarity)
+df_test['sentiment'] = df_test['Tweet'].progress_apply(lambda x: TextBlob(x).sentiment.polarity)
 
-# Apply preprocessing to each tweet and obtain vectors
-vector_size = 200  # Adjust based on the chosen GloVe model
+# Save to a csv file
+df_train.to_csv('train_data_preprocess.csv')
+df_test.to_csv('test_data_preprocess.csv')
 
-df['Embeddings'] = list(np.vstack([get_avg_embedding(tweet, embeddings_model, vector_size) for tweet in df['Tweet']]))
+# Function to subdivide data into 20 intervals and concatenate embeddings
+def create_subdivisions_with_concatenation(df, num_subdivisions=20, embeddings_model=None):
+    subdivided_data = []
+    
+    # Convert Tweet columns in strings to avoid mistakes
+    df['Tweet'] = df['Tweet'].astype(str) 
 
-# Remove rows with NaN embedding vectors
-df.dropna(inplace=True)
+    # Group by MatchID and PeriodID
+    for (match_id, period_id), group in df.groupby(['MatchID', 'PeriodID']):
+        tweets_per_period = len(group)
+        subdivision_size = tweets_per_period // num_subdivisions
+        
+        # Placeholder for concatenated embeddings
+        concatenated_embeddings = []
+        
+        for i in range(num_subdivisions):
+            # Get the subset of tweets for this subdivision
+            start_idx = i * subdivision_size
+            end_idx = (i + 1) * subdivision_size if (i + 1) * subdivision_size <= tweets_per_period else tweets_per_period
+            
+            if start_idx >= end_idx:  # Handle edge cases
+                continue
+            
+            subdivision_tweets = group.iloc[start_idx:end_idx]
+            
+            # Compute average embedding for this subdivision
+            embeddings = []
+            for tweet in subdivision_tweets['Tweet']:
+                try:
+                    # Replace this with your actual embedding model logic
+                    embeddings.append(get_avg_embedding(tweet, embeddings_model))
+                except Exception as e:
+                    print(f"Error processing tweet: {tweet} | Error: {e}")
+                    continue
+            
+            if embeddings:
+                avg_embedding = np.mean(np.vstack(embeddings), axis=0)
+                concatenated_embeddings.append(avg_embedding)
+        
+        # Flatten concatenated embeddings into a single vector
+        if concatenated_embeddings:
+            flattened_embeddings = np.concatenate(concatenated_embeddings)
+            
+            subdivided_data.append({
+                'MatchID': match_id,
+                'PeriodID': period_id,
+                'ID': group['ID'].iloc[0],  # Keep the first ID
+                'ConcatenatedEmbeddings': flattened_embeddings,
+                'EventType': group['EventType'].iloc[0]  # Assuming same EventType for the whole period
+            })
+    
+    return pd.DataFrame(subdivided_data)
 
-# Drop the columns that are not useful anymore
-df = df.drop(columns=['Timestamp', 'Tweet'])
+df_train = pd.read_csv('train_data_preprocess.csv')
+df_test = pd.read_csv('test_data_preprocess.csv')
 
-# Assign "PackID" to group every 50 rows
-df['PackID'] = (df.index // 50)
+df_train_subdivided = create_subdivisions_with_concatenation(df_train, 
+                                                             num_subdivisions=20, 
+                                                             embeddings_model=embeddings_model)
+df_test_subdivided = create_subdivisions_with_concatenation(df_test, 
+                                                             num_subdivisions=20, 
+                                                             embeddings_model=embeddings_model)
 
-#  Group the tweets into their corresponding periods
-period_features = df.groupby(['MatchID', 'PeriodID', 'ID', 'PackID']).mean().reset_index()
+df_train_subdivided.to_pickle('train_subdivided_data.pkl')
+df_test_subdivided.to_pickle('test_subdivided_data.pkl')
 
-# Recreate X and y
-X = np.hstack([
-    np.vstack(period_features['Embeddings']),
-    period_features['PeriodID'].values.reshape(-1, 1),
-    period_features['sentiment'].values.reshape(-1, 1)
-])
-y = period_features['EventType'].values
+# Preparing evaluation data: there is no event type column so the function needs to be different
 
-# Ensure X and y have the same length
-print("Length of X:", len(X))
-print("Length of y:", len(y))
+def prepare_eval_data_with_concatenation(eval_df, num_subdivisions=20, embeddings_model=None):
+    prepared_data = []
+    
+    # Convertir la colonne Tweet en chaînes pour éviter les erreurs
+    eval_df['Tweet'] = eval_df['Tweet'].astype(str)
+    
+    for (match_id, period_id), group in eval_df.groupby(['MatchID', 'PeriodID']):
+        tweets_per_period = len(group)
+        subdivision_size = tweets_per_period // num_subdivisions
+        
+        concatenated_embeddings = []
+        
+        for i in range(num_subdivisions):
+            # Get the subset of tweets for this subdivision
+            start_idx = i * subdivision_size
+            end_idx = (i + 1) * subdivision_size if (i + 1) * subdivision_size <= tweets_per_period else tweets_per_period
+            
+            if start_idx >= end_idx:
+                continue
+            
+            subdivision_tweets = group.iloc[start_idx:end_idx]
+            
+            # Compute average embedding for this subdivision
+            embeddings = []
+            for tweet in subdivision_tweets['Tweet']:
+                try:
+                    embeddings.append(get_avg_embedding(tweet, embeddings_model))
+                except Exception as e:
+                    print(f"Error processing tweet: {tweet} | Error: {e}")
+                    continue
+            
+            if embeddings:
+                avg_embedding = np.mean(np.vstack(embeddings), axis=0)
+                concatenated_embeddings.append(avg_embedding)
+        
+        # Flatten concatenated embeddings into a single vector
+        if concatenated_embeddings:
+            flattened_embeddings = np.concatenate(concatenated_embeddings)
+            
+            prepared_data.append({
+                'ID': group['ID'].iloc[0],  # Keep the first ID
+                'ConcatenatedEmbeddings': flattened_embeddings,
+                'PeriodID': period_id
+            })
+    
+    return pd.DataFrame(prepared_data)
 
-# Combine X and y into a DataFrame
-feature_columns = [f"feature_{i}" for i in range(X.shape[1])]
-df_combined = pd.DataFrame(X, columns=feature_columns)
-df_combined['label'] = y
+li = []
+for filename in os.listdir("eval_tweets"):
+    df = pd.read_csv("eval_tweets/" + filename)
+    li.append(df)
+df_eval = pd.concat(li, ignore_index=True)
 
-# Save to a CSV file
-df_combined.to_csv("glove_features_and_labels.csv", index=False)
-print("Features and labels saved to glove_features_and_labels.csv")
+# Apply preprocessing to each tweet
+df_eval['Tweet'] = df_eval['Tweet'].progress_apply(preprocess_tweet)
+
+# Add a feature for sentiment using TextBlob
+df_eval['sentiment'] = df_eval['Tweet'].progress_apply(lambda x: TextBlob(x).sentiment.polarity)
+
+# Save to a csv file
+df_eval.to_csv('eval_data_preprocess.csv')
+
+df_eval = pd.read_csv('eval_data_preprocess.csv')
+
+df_eval_subdivided = prepare_eval_data_with_concatenation(df_eval, num_subdivisions=20, embeddings_model=embeddings_model)
+
+df_eval_subdivided.to_pickle('eval_subdivided_data.pkl')
